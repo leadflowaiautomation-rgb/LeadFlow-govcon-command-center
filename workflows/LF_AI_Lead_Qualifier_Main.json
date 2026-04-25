@@ -1,0 +1,465 @@
+{
+  "name": "LF_AI_Lead_Qualifier_Main",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "local-ai-lead-qualifier",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        0,
+        0
+      ],
+      "id": "92f99f20-5832-42c1-ae84-36ded640bacc",
+      "name": "01 - Webhook Lead Intake",
+      "webhookId": "e17f7b2e-2023-4114-b456-0adecab988f8"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "285d1501-7294-4bc3-97db-f7c6a17ba516",
+              "name": "full_name",
+              "value": "={{$json.body.full_name || $json.full_name || $json.name || \"Unknown Lead\"}}",
+              "type": "string"
+            },
+            {
+              "id": "3751b0e9-2885-4c73-add1-7b795ddfd8c2",
+              "name": "email",
+              "value": "={{$json.body.email || $json.email || \"\"}}",
+              "type": "string"
+            },
+            {
+              "id": "aec6eac7-0b32-4aae-b5f3-70eace845006",
+              "name": "phone",
+              "value": "={{$json.body.phone || $json.phone || \"\"}}",
+              "type": "string"
+            },
+            {
+              "id": "7e86ffd1-b2f3-4566-bebf-954e26946d6a",
+              "name": "message",
+              "value": "={{$json.body.message || $json.message || $json.notes || $json.description || \"\"}}",
+              "type": "string"
+            },
+            {
+              "id": "b4090399-d05b-4696-bfec-a095e0ca8426",
+              "name": "source",
+              "value": "={{$json.source || \"website\"}}",
+              "type": "string"
+            }
+          ]
+        },
+        "includeOtherFields": true,
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        224,
+        0
+      ],
+      "id": "bdc842ec-d830-4c08-8b62-d148044e303b",
+      "name": "02 - Normalize Lead Data"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=http://76.13.26.253:11434/api/generate",
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={\n  \"model\": \"gemma:2b\",\n  \"prompt\": \"You are a strict real estate lead qualification assistant. Return ONLY valid JSON. Do not use markdown.\\n\\nLead Name: {{$json.full_name}}\\nEmail: {{$json.email}}\\nPhone: {{$json.phone}}\\nMessage: {{$json.message}}\\nSource: {{$json.source}}\\n\\nSCORING RULES:\\n- If the lead wants to sell, buy, book, schedule, get pricing, or speak with someone within 0-60 days, priority must be high.\\n- If the message includes urgent words like urgent, ASAP, immediately, fast, relocating, already bought, already approved, cash buyer, need to move, must close, priority must be high.\\n- If the lead includes a clear location plus timeline, priority must be high.\\n- If the lead is interested but has no timeline, priority should be medium.\\n- If the message is vague, spammy, or only browsing, priority should be low.\\n\\nINTENT SCORE RULES:\\n- high = 75 to 100\\n- medium = 40 to 74\\n- low = 0 to 39\\n\\nReturn exactly this JSON structure:\\n{\\n  \\\"lead_type\\\": \\\"buyer/seller/service/unknown\\\",\\n  \\\"intent_score\\\": 0,\\n  \\\"priority\\\": \\\"low/medium/high\\\",\\n  \\\"summary\\\": \\\"short summary\\\",\\n  \\\"recommended_action\\\": \\\"what should be done next\\\",\\n  \\\"reasoning\\\": \\\"why this score and priority were chosen\\\"\\n}\",\n  \"stream\": false\n}",
+        "options": {
+          "timeout": 300000
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        448,
+        0
+      ],
+      "id": "3e91292d-e777-43ef-848e-83e12f41a186",
+      "name": "03 - Ollama Gemma Lead Analysis",
+      "retryOnFail": false
+    },
+    {
+      "parameters": {
+        "jsCode": "const raw = $json.response || \"{}\";\n\nlet parsed;\n\ntry {\n  const cleaned = raw\n    .replace(/```json/g, \"\")\n    .replace(/```/g, \"\")\n    .trim();\n\n  parsed = JSON.parse(cleaned);\n} catch (error) {\n  parsed = {\n    lead_type: \"unknown\",\n    intent_score: 0,\n    priority: \"low\",\n    summary: \"AI response could not be parsed.\",\n    recommended_action: \"Review lead manually.\",\n    reasoning: raw\n  };\n}\n\n// ✅ Normalize priority safely\nconst priority = (parsed.priority || \"low\").toLowerCase().trim();\n\n// ✅ Safety override for obvious high-intent leads\nconst message = ($node[\"02 - Normalize Lead Data\"].json.message || \"\").toLowerCase();\n\nlet finalPriority = priority;\n\nif (\n  message.includes(\"urgent\") ||\n  message.includes(\"asap\") ||\n  message.includes(\"immediately\") ||\n  message.includes(\"fast\") ||\n  message.includes(\"relocating\") ||\n  message.includes(\"already bought\") ||\n  message.includes(\"must sell\") ||\n  message.includes(\"need to sell\") ||\n  message.includes(\"closing soon\")\n) {\n  finalPriority = \"high\";\n}\n\n// ✅ Format date (clean EST format)\nconst now = new Date();\n\nconst formattedDate = new Intl.DateTimeFormat(\"en-US\", {\n  timeZone: \"America/New_York\",\n  month: \"2-digit\",\n  day: \"2-digit\",\n  year: \"numeric\",\n  hour: \"numeric\",\n  minute: \"2-digit\",\n  hour12: true\n}).format(now);\n\nreturn [\n  {\n    json: {\n      full_name: $node[\"02 - Normalize Lead Data\"].json.full_name,\n      email: $node[\"02 - Normalize Lead Data\"].json.email,\n      phone: $node[\"02 - Normalize Lead Data\"].json.phone,\n      message: $node[\"02 - Normalize Lead Data\"].json.message,\n      source: $node[\"02 - Normalize Lead Data\"].json.source,\n      lead_type: parsed.lead_type || \"unknown\",\n      intent_score: parsed.intent_score || 0,\n      priority: finalPriority,\n      summary: parsed.summary || \"\",\n      recommended_action: parsed.recommended_action || \"\",\n      reasoning: parsed.reasoning || \"\",\n      status: \"qualified_by_local_ai\",\n      created_at: formattedDate\n    }\n  }\n];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        672,
+        0
+      ],
+      "id": "bb3f4c82-69a3-4374-be8f-8dadfff3862e",
+      "name": "04 - Extract AI Response"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "e48757e5-ce2f-43c6-88b0-a75ad35910c1",
+              "leftValue": "={{ (String($json.priority || '').toLowerCase().trim() === 'high') || (Number($json.intent_score || 0) >= 75) }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        1120,
+        0
+      ],
+      "id": "301735a7-b072-4675-aa1e-2bcd5c22fd61",
+      "name": "06 - Check High Priority"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "f1a53901-575c-4530-8823-b4a4487813ab",
+              "name": "action",
+              "value": "CALL OR TEXT IMMEDIATELY",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        1328,
+        -352
+      ],
+      "id": "1d8039a1-699d-42e2-9504-764041cb3014",
+      "name": "07 - High Priority Action"
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "{\n  \"success\": true,\n  \"lead\": {\n    \"full_name\": \"{{$json.full_name}}\",\n    \"email\": \"{{$json.email}}\",\n    \"phone\": \"{{$json.phone}}\",\n    \"lead_type\": \"{{$json.lead_type}}\",\n    \"intent_score\": \"{{$json.intent_score}}\",\n    \"priority\": \"{{$json.priority}}\",\n    \"summary\": \"{{$json.summary}}\",\n    \"recommended_action\": \"{{$json.recommended_action}}\",\n    \"reasoning\": \"{{$json.reasoning}}\"\n  }\n}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [
+        1344,
+        96
+      ],
+      "id": "66f63b34-22cf-43cc-87b6-15a71e74e97c",
+      "name": "08 - Respond Success"
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "https://docs.google.com/spreadsheets/d/1bWPYrphGSbaEbOLaFwD1NcmbrV5OokDMQ7UYffacdAA/edit?gid=0#gid=0",
+          "mode": "url"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "gid=0",
+          "mode": "list",
+          "cachedResultName": "Sheet1",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1bWPYrphGSbaEbOLaFwD1NcmbrV5OokDMQ7UYffacdAA/edit#gid=0"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "lead_id ": "={{$execution.id}}",
+            "created_at": "={{$json.created_at}}",
+            "full_name": "={{$json.full_name}}",
+            "email": "={{$json.email}}",
+            "lead_type": "={{$json.lead_type}}",
+            "priority": "={{$json.priority}}",
+            "intent_score": "={{$json.intent_score}}",
+            "summary": "={{$json.summary}}",
+            "status": "={{$json.status}}",
+            "source": "={{$json.source}}",
+            "notes": "={{$json.recommended_action}} | {{$json.reasoning}}",
+            "recommended_action": "={{$json.recommended_action}}   ",
+            "phone": "={{$json.phone}}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "lead_id ",
+              "displayName": "lead_id ",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "created_at",
+              "displayName": "created_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "full_name",
+              "displayName": "full_name",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "email",
+              "displayName": "email",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "phone",
+              "displayName": "phone",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "lead_type",
+              "displayName": "lead_type",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "priority",
+              "displayName": "priority",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "intent_score",
+              "displayName": "intent_score",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "summary",
+              "displayName": "summary",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "status",
+              "displayName": "status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "source",
+              "displayName": "source",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "notes",
+              "displayName": "notes",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "recommended_action",
+              "displayName": "recommended_action",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        880,
+        0
+      ],
+      "id": "4041cd7c-7311-4f61-9a19-705e2e026fd5",
+      "name": "05 - Save Lead to CRM",
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "LPWUztDfJGPuiRs5",
+          "name": "LeadFlowAIAutomation_Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "from": "+18703594263",
+        "to": "+16475682671",
+        "message": "=🔥 HOT LEAD ALERT\n\nName: {{$json.full_name || \"Unknown Lead\"}}\nPhone: {{$json.phone || \"No phone provided\"}}\nEmail: {{$json.email || \"No email provided\"}}\n\nPriority: {{$json.priority || \"unknown\"}}\nScore: {{$json.intent_score || 0}}\n\nSummary: {{$json.summary || \"No summary available\"}}\n\nAction: {{$json.recommended_action || \"Review lead immediately\"}}\n\nSource: {{$json.source || \"unknown\"}}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.twilio",
+      "typeVersion": 1,
+      "position": [
+        1328,
+        -96
+      ],
+      "id": "43386d5c-ceef-455e-80ce-e94b4bfa105f",
+      "name": "Send an SMS/MMS/WhatsApp message",
+      "credentials": {
+        "twilioApi": {
+          "id": "yNmQY56Y4H2xnbno",
+          "name": "Twilio account"
+        }
+      }
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "01 - Webhook Lead Intake": {
+      "main": [
+        [
+          {
+            "node": "02 - Normalize Lead Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "02 - Normalize Lead Data": {
+      "main": [
+        [
+          {
+            "node": "03 - Ollama Gemma Lead Analysis",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "03 - Ollama Gemma Lead Analysis": {
+      "main": [
+        [
+          {
+            "node": "04 - Extract AI Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "04 - Extract AI Response": {
+      "main": [
+        [
+          {
+            "node": "05 - Save Lead to CRM",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "06 - Check High Priority": {
+      "main": [
+        [
+          {
+            "node": "Send an SMS/MMS/WhatsApp message",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "08 - Respond Success",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "08 - Respond Success": {
+      "main": [
+        []
+      ]
+    },
+    "05 - Save Lead to CRM": {
+      "main": [
+        [
+          {
+            "node": "06 - Check High Priority",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "5d5796a4-d898-427b-bcbf-7db4fe09fce3",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "d2f73dae221d0b4bd2daeb17ac9134821c79029b0c61f2dc12b392117f95088c"
+  },
+  "id": "8Q1MmOJ8emuLVHHE",
+  "tags": []
+}
